@@ -10,15 +10,21 @@ const (
 
 // TdxStat 个股综合统计指标(来自 tdxstat.cfg, 35 字段)。
 //
-// 仅 Market/Code/Date 字段语义确定; 其余比率/市值/阶段涨跌/股本等字段为通达信内部格式,
-// 无官方文档, 不强行命名, 完整原始字段保留在 Fields(下标与文件列一一对应, 0 基)。
-// 经验推断(未核验): [2]换手率% [3]涨跌幅% [6..10]量比/市盈/市净等 [11,14]流通/总市值
-// [17..21]阶段涨跌幅 [24,34]股本。需要精确语义请按实盘核验后再用 Fields 取值。
+// 字段下标按文件列(1 基)说明; Fields 为全部原始字段(0 基, 与文件列一一对应)。
+// 已核验字段(多股量级三角验证): [4]市盈率TTM [7]涨跌幅% [10]静态市盈率 [11]股息率%。
+// 其余字段为通达信内部格式、无官方文档, 不强行命名, 用 Fields 自取。
+// 经验推断(未核验): [3]换手率% [6]连涨连跌天数 [12]/[15]市值类 [18..22]阶段涨跌幅 [25]/[35]股本。
 type TdxStat struct {
-	Market uint8    // [0] 市场 0=深 1=沪 2=京
-	Code   string   // [1] 证券代码
-	Date   string   // [4] 数据日期 YYYYMMDD
-	Fields []string // 全部 35 个原始字段
+	Market uint8  // [1] 市场 0=深 1=沪 2=京
+	Code   string // [2] 证券代码
+	Date   string // [5] 数据日期 YYYYMMDD
+
+	PETTM     float64 // [4]  市盈率(TTM)
+	ChangePct float64 // [7]  涨跌幅%
+	PEStatic  float64 // [10] 静态市盈率
+	DivYield  float64 // [11] 股息率%
+
+	Fields []string // 全部 35 个原始字段(0 基)
 }
 
 // TdxStat2 个股资金流向 + 板块归属(来自 tdxstat2.cfg, 21 字段)。
@@ -59,10 +65,14 @@ func ParseTdxStat(data []byte) []*TdxStat {
 			continue
 		}
 		out = append(out, &TdxStat{
-			Market: uint8(Uint16FromStr(f[0])),
-			Code:   f[1],
-			Date:   field(f, 4),
-			Fields: f,
+			Market:    uint8(Uint16FromStr(f[0])),
+			Code:      f[1],
+			Date:      field(f, 4),
+			PETTM:     Float64FromStr(field(f, 3)),  // 文件列[4]
+			ChangePct: Float64FromStr(field(f, 6)),  // 文件列[7]
+			PEStatic:  Float64FromStr(field(f, 9)),  // 文件列[10]
+			DivYield:  Float64FromStr(field(f, 10)), // 文件列[11]
+			Fields:    f,
 		})
 	}
 	return out
