@@ -3,8 +3,15 @@ package protocol
 import (
 	"encoding/binary"
 	"errors"
+	"strconv"
 	"strings"
 )
+
+// Uint16FromStr 解析十进制字符串为 uint16, 失败返回 0。
+func Uint16FromStr(s string) uint16 {
+	n, _ := strconv.ParseUint(strings.TrimSpace(s), 10, 16)
+	return uint16(n)
+}
 
 // 板块文件协议（地域/板块/概念/指数）。参考 pytdx get_block_info + block_reader。
 const (
@@ -24,6 +31,79 @@ const (
 	blockChunk = 0x7530 // 单次下载块大小 30000
 )
 
+// 板块/配置数据总包及其常用成分文件名。
+// ReportZHB 是通达信「盘后数据/板块」配置总包，经 report file 协议(0x06B9)整体下载后解压，
+// 内含以下 GBK 文本/二进制配置文件。block_*.dat 成分文件本身不含板块指数代码(id)，
+// 板块名↔指数代码(id) 的映射在 tdxzs.cfg 系列文件中。
+const (
+	ReportZHB = "zhb.zip" // 板块/配置数据总包(report file 下载后解压, 含下列文件)
+
+	FileTdxZs   = "tdxzs.cfg"   // 板块指数配置: 板块名↔指数代码(880xxx 行业/概念, 881xxx 地域)↔类型
+	FileTdxZs3  = "tdxzs3.cfg"  // 板块指数配置(扩展, 同 tdxzs.cfg 格式)
+	FileTdxDsZs = "tdxdszs.cfg" // 港股板块指数配置: 板块名↔指数代码(HKxxxx)
+	FileTdxBk   = "tdxbk.cfg"   // 概念板块简称↔全称
+	FileIncon   = "incon.dat"   // 证监会/通达信行业分类代码表
+	FileHsPy    = "hspy.dat"    // 沪深拼音/简称
+)
+
+// TdxZs 一个板块指数定义(来自 tdxzs.cfg / tdxzs3.cfg / tdxdszs.cfg)。
+type TdxZs struct {
+	Name    string // 板块名称
+	Code    string // 板块指数代码(id), 如 880xxx 行业/概念, 881xxx 地域, HKxxxx 港股
+	Type    uint16 // 板块类型
+	SubType uint16 // 子类型
+	Ref     string // 成分标识(成分文件序号或名称)
+}
+
+// ParseTdxZs 解析板块指数配置(GBK 文本)。
+// 每行 6 段以 `|` 分隔: `名称|指数代码|类型|子类型|flag|成分标识`，例:
+//
+//	轮动趋势|880081|5|2|0|轮动趋势
+//	黑龙江|880201|3|1|0|1
+func ParseTdxZs(data []byte) []*TdxZs {
+	lines := strings.Split(string(UTF8ToGBK(data)), "\n")
+	out := make([]*TdxZs, 0, len(lines))
+	for _, ln := range lines {
+		ln = strings.TrimRight(ln, "\r")
+		if ln == "" || strings.HasPrefix(ln, "#") {
+			continue
+		}
+		f := strings.Split(ln, "|")
+		if len(f) < 2 || f[0] == "" || f[1] == "" {
+			continue
+		}
+		zs := &TdxZs{Name: f[0], Code: f[1]}
+		if len(f) >= 3 {
+			zs.Type = Uint16FromStr(f[2])
+		}
+		if len(f) >= 4 {
+			zs.SubType = Uint16FromStr(f[3])
+		}
+		if len(f) >= 6 {
+			zs.Ref = f[5]
+		}
+		out = append(out, zs)
+	}
+	return out
+}
+
+// FillBlockIndex 按板块名称用 tdxzs 配置回填板块指数代码(id)到 block_*.dat 解析出的板块。
+// block 文件本身无 id, 故需 tdxzs.cfg 关联。返回成功匹配的数量。
+func FillBlockIndex(blocks []*Block, zs []*TdxZs) int {
+	m := make(map[string]string, len(zs))
+	for _, z := range zs {
+		m[z.Name] = z.Code
+	}
+	n := 0
+	for _, b := range blocks {
+		if code, ok := m[b.Name]; ok {
+			b.Index = code
+			n++
+		}
+	}
+	return n
+}
+
 // BlockMetaResp 板块文件元信息。
 type BlockMetaResp struct{ Size uint32 }
 
@@ -31,8 +111,10 @@ type BlockMetaResp struct{ Size uint32 }
 type BlockInfoResp struct{ Data []byte }
 
 // Block 一个板块及其成分（Codes 为 7 字符，首字符为市场标志：1=沪 0=深）。
+// Index 为板块指数代码(id)，block 文件本身不含，需经 tdxzs.cfg 按名称回填(见 FillBlockIndex)。
 type Block struct {
 	Name  string
+	Index string // 板块指数代码(id), 如 880xxx; 默认空, FillBlockIndex 回填
 	Type  uint16
 	Codes []string
 }

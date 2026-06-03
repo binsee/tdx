@@ -1,8 +1,11 @@
 package tdx
 
 import (
+	"archive/zip"
+	"bytes"
 	"errors"
 	"fmt"
+	"io"
 	"runtime/debug"
 	"sync/atomic"
 	"time"
@@ -541,6 +544,90 @@ func (this *Client) GetBlockData(file string) ([]*protocol.Block, error) {
 		return nil, err
 	}
 	return protocol.ParseBlockFile(buf), nil
+}
+
+// GetReportFile 下载通达信服务器任意报表/数据文件（report file，指令 0x06B9）原始字节。
+// 与 GetBlockFileRaw 共用同一传输帧，区别在于报表文件无 0x02C5 元信息预查文件大小，
+// 故按 0x7530 块大小循环递增 offset 拉取，直到返回块短于请求块（末块）或为空时终止。
+// 对齐 pytdx GetReportFile / mitdx get_report_file。
+func (this *Client) GetReportFile(file string) ([]byte, error) {
+	const chunk = uint32(0x7530)
+	var buf []byte
+	start := uint32(0)
+	for {
+		r, err := this.SendFrame(protocol.MBlock.FrameInfo(start, chunk, file))
+		if err != nil {
+			return nil, err
+		}
+		info, ok := r.(*protocol.BlockInfoResp)
+		if !ok || len(info.Data) == 0 {
+			break
+		}
+		buf = append(buf, info.Data...)
+		start += uint32(len(info.Data))
+		if uint32(len(info.Data)) < chunk {
+			break
+		}
+	}
+	return buf, nil
+}
+
+// GetZHBFiles 下载板块/配置数据总包 zhb.zip(report file 0x06B9)并解压，返回 文件名→原始字节。
+// zhb.zip 内含 tdxzs.cfg(板块指数代码)、tdxbk.cfg(概念板块)、incon.dat(行业分类)等配置文件。
+func (this *Client) GetZHBFiles() (map[string][]byte, error) {
+	raw, err := this.GetReportFile(protocol.ReportZHB)
+	if err != nil {
+		return nil, err
+	}
+	if len(raw) == 0 {
+		return nil, fmt.Errorf("%s 无数据", protocol.ReportZHB)
+	}
+	zr, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		return nil, fmt.Errorf("解压 %s 失败: %w", protocol.ReportZHB, err)
+	}
+	out := make(map[string][]byte, len(zr.File))
+	for _, f := range zr.File {
+		rc, err := f.Open()
+		if err != nil {
+			return nil, err
+		}
+		b, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			return nil, err
+		}
+		out[f.Name] = b
+	}
+	return out, nil
+}
+
+// GetTdxZs 下载并解析板块指数配置 tdxzs.cfg(来自 zhb.zip) → 板块名↔指数代码(id) 列表。
+func (this *Client) GetTdxZs() ([]*protocol.TdxZs, error) {
+	files, err := this.GetZHBFiles()
+	if err != nil {
+		return nil, err
+	}
+	data, ok := files[protocol.FileTdxZs]
+	if !ok {
+		return nil, fmt.Errorf("%s 中缺少 %s", protocol.ReportZHB, protocol.FileTdxZs)
+	}
+	return protocol.ParseTdxZs(data), nil
+}
+
+// GetBlockDataWithIndex 下载板块文件(block_*.dat)并按名称回填板块指数代码(id, 来自 zhb.zip 的 tdxzs.cfg)。
+// block 文件本身无 id，此方法额外拉取一次 zhb.zip 完成关联。
+func (this *Client) GetBlockDataWithIndex(file string) ([]*protocol.Block, error) {
+	blocks, err := this.GetBlockData(file)
+	if err != nil {
+		return nil, err
+	}
+	zs, err := this.GetTdxZs()
+	if err != nil {
+		return nil, err
+	}
+	protocol.FillBlockIndex(blocks, zs)
+	return blocks, nil
 }
 
 // GetTdxHy 下载并解析 tdxhy.cfg → 每只股票的通达信/申万行业归属。
