@@ -130,6 +130,30 @@ for _, f := range fs {
 
 ---
 
+## 🏢 财务 / F10 公司资料 / 行业归属
+
+```go
+c, _ := tdx.DialDefault()
+defer c.Close()
+
+// 财务/基本面: 流通股本/总股本/上市日期/股东户数/净利润等
+fi, _ := c.GetFinanceInfo(protocol.ExchangeSH, "600519")
+fmt.Println(fi.LiuTongGuBen, fi.ZongGuBen, fi.GuDongRenShu, fi.JingLiRun)
+
+// F10 公司资料: 先取分类, 再读正文
+cats, _ := c.GetCompanyCategory(protocol.ExchangeSH, "600519")
+content, _ := c.GetCompanyContent(protocol.ExchangeSH, "600519", cats[0].Filename, cats[0].Start, cats[0].Length)
+_ = content
+
+// 行业归属(通达信新行业 T + 申万行业 X), 全市场
+hy, _ := c.GetTdxHy()
+for _, v := range hy { _ = v.TdxHy; _ = v.SwHy }
+```
+
+> 演示: [`example/GetFinanceInfo`](example/GetFinanceInfo)、[`example/GetTdxHy`](example/GetTdxHy)。
+
+---
+
 ## 🗄 报表/配置数据 (zhb.zip)
 
 通达信板块/配置文件以 `zhb.zip` 总包经 report file 协议(0x06B9)整体下发，含 44 个文件(tdxzs.cfg/tdxbk.cfg/incon.dat/tdxstat.cfg 等)。
