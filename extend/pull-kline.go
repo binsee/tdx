@@ -15,6 +15,7 @@ import (
 	"github.com/injoyai/tdx"
 	"github.com/injoyai/tdx/lib/xorms"
 	"github.com/injoyai/tdx/protocol"
+	"github.com/robfig/cron/v3"
 	"xorm.io/xorm"
 )
 
@@ -65,17 +66,20 @@ type PullKline struct {
 	Types   []string
 }
 
-func (this *PullKline) Run(m *tdx.Manage) error {
-	this.Update(m)
-	for range time.Tick(time.Hour) {
-		if m.Workday.TodayIs() {
-			this.Update(m)
-		}
-	}
-	return nil
+func (this *PullKline) Run(m *tdx.Manage, spec string) error {
+	this.Update(m, true)
+	cr := cron.New(cron.WithSeconds())
+	_, err := cr.AddFunc(spec, func() { this.Update(m) })
+	return err
 }
 
-func (this *PullKline) Update(m *tdx.Manage) error {
+func (this *PullKline) Update(m *tdx.Manage, must ...bool) error {
+	if len(must) == 0 || !must[0] {
+		if !m.Workday.TodayIs() {
+			return nil
+		}
+	}
+
 	updated, err := this.Updated.Updated("pull")
 	if err != nil {
 		return err
@@ -83,9 +87,12 @@ func (this *PullKline) Update(m *tdx.Manage) error {
 	if updated {
 		return nil
 	}
+
 	codes := this.Config.Codes
 	if len(codes) == 0 {
 		codes = m.Codes.GetStockCodes()
+		codes = append(codes, m.Codes.GetETFCodes()...)
+		codes = append(codes, m.Codes.GetIndexCodes()...)
 	}
 	for _, v := range this.Types {
 		switch v {
